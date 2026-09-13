@@ -11,6 +11,14 @@ pub const HOST: &str = "127.0.0.1";
 pub const PORT: u16 = 4141;
 pub const OPENAI_HOST: &str = "chatgpt.com";
 
+/// Actix's `web::Bytes` extractor defaults to a 256 KiB body limit — fine
+/// for a public-facing API, but Codex's own requests (full conversation
+/// history, tool schemas, file contents) routinely exceed that long before
+/// they reach any particular provider. This has to be one generous limit
+/// for the whole process, not a per-route setting: the body size is capped
+/// before `dispatch` ever parses `model` to pick a route.
+pub const MAX_PAYLOAD_BYTES: usize = 100 * 1024 * 1024;
+
 /// Resolves `$HOME`, falling back to `/` only if the environment is somehow
 /// missing it entirely (never expected outside a stripped-down sandbox).
 pub fn home_dir() -> PathBuf {

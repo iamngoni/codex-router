@@ -16,6 +16,9 @@ async fn dispatch_routes_glm_model_through_the_real_app_wiring() {
     let app = actix_web::test::init_service(
         App::new()
             .app_data(web::Data::new(client))
+            .app_data(web::PayloadConfig::new(
+                codex_router::config::MAX_PAYLOAD_BYTES,
+            ))
             .route("/healthz", web::get().to(codex_router::healthz))
             .default_service(web::route().to(codex_router::dispatch)),
     )

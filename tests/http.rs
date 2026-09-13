@@ -51,6 +51,38 @@ async fn healthz_reports_ok() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+/// Regression test for a real incident: Actix's `web::Bytes` extractor
+/// defaults to a 256 KiB body limit, which silently 413'd real Codex
+/// requests (full conversation history + tool schemas routinely exceed
+/// that) before `dispatch` ever ran — invisible in our own logs since the
+/// handler never got called. Exercises the exact extractor `dispatch` uses,
+/// with the exact `PayloadConfig` `main.rs` registers, without needing a
+/// real provider round trip.
+#[actix_web::test]
+async fn large_body_is_not_rejected_by_the_payload_limit() {
+    async fn echo_len(body: web::Bytes) -> actix_web::HttpResponse {
+        actix_web::HttpResponse::Ok().body(body.len().to_string())
+    }
+
+    let app = actix_web::test::init_service(
+        App::new()
+            .app_data(web::PayloadConfig::new(
+                codex_router::config::MAX_PAYLOAD_BYTES,
+            ))
+            .route("/echo", web::post().to(echo_len)),
+    )
+    .await;
+
+    // Comfortably past Actix's 256 KiB default, comfortably under our limit.
+    let big_body = vec![b'a'; 2 * 1024 * 1024];
+    let req = TestRequest::post()
+        .uri("/echo")
+        .set_payload(big_body.clone())
+        .to_request();
+    let resp = actix_web::test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
 #[actix_web::test]
 async fn translated_route_returns_plain_text_reply() {
     let mock_server = MockServer::start().await;

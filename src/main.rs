@@ -13,6 +13,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(client.clone()))
+            .app_data(web::PayloadConfig::new(config::MAX_PAYLOAD_BYTES))
             .route("/healthz", web::get().to(healthz))
             .default_service(web::route().to(dispatch))
     })
