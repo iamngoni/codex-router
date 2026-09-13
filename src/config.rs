@@ -35,3 +35,15 @@ pub fn last_error_file() -> PathBuf {
         .join("state")
         .join("codex-router-last-error.json")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_paths_live_under_home() {
+        assert!(log_file().starts_with(home_dir()));
+        assert!(log_file().ends_with("codex-router.log"));
+        assert!(last_error_file().ends_with("codex-router-last-error.json"));
+    }
+}

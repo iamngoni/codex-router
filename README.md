@@ -64,8 +64,37 @@ cargo test
 
 Unit tests cover the pure translation/schema logic. `tests/http.rs` mocks
 the upstream with `wiremock` to exercise `handle_translated` and
-`handle_passthrough` end to end (plain text, streaming, tool calls, and
-auth-header replacement). The upstream `>=400` branch — which overwrites
-the real `codex-router-last-error.json` — is deliberately left out of the
-automated suite to keep it hermetic; it was exercised manually against the
-live Z.ai endpoint during development.
+`handle_passthrough` end to end: plain text, streaming, tool calls,
+auth-header replacement, missing-key/connect-failure/malformed-upstream-JSON
+errors, and the `>=400` last-error-file write (the two tests covering that
+last one deliberately overwrite the real `~/.local/state/
+codex-router-last-error.json` — there's no test-only override for that
+path, and it's a disposable scratch file the running service already
+overwrites on every real failure, so a synthetic entry from `cargo test` is
+an accepted trade-off for actually covering that write).
+
+```sh
+cargo test --test live_glm -- --ignored
+```
+
+Opt-in, hits the real Z.ai API through the full `dispatch` routing glue
+(the one path the hermetic suite can't reach, since `find_route` always
+resolves to the real provider hosts). Requires a real `~/.config/zai/key`
+and spends real credits — not run by default.
+
+### Coverage
+
+```sh
+cargo llvm-cov --all-features --workspace --ignore-filename-regex 'main\.rs$'
+```
+
+`main.rs` is excluded as the one narrow, documented exception: it's pure
+process bootstrap (`.bind()?.run().await`), nothing to unit test. With that
+exclusion, line coverage is **~84.6%**, short of the 95% bar. The gap is
+almost entirely `lib.rs`'s `dispatch` — its constituent logic (`find_route`,
+`handle_translated`, `handle_passthrough`) is fully covered individually,
+and the whole path is proven correct by `tests/live_glm.rs`, but that test
+is `#[ignore]`d (real network/credentials) so it doesn't count toward the
+automated number. Closing this fully would mean making the routing table
+injectable purely for testability — a deliberate scope call left as-is
+rather than done silently.

@@ -2,10 +2,13 @@
 //! two handlers exactly as `dispatch` calls them, plus the real Actix app
 //! wiring for the liveness probe.
 //!
-//! The `>=400` upstream-error branch (which overwrites
-//! `~/.local/state/codex-router-last-error.json` on the real machine) is
-//! deliberately not covered here to keep this suite hermetic — it was
-//! exercised manually against the live Z.ai endpoint during development.
+//! The upstream-error tests below intentionally overwrite the real
+//! `~/.local/state/codex-router-last-error.json` on the machine running
+//! `cargo test` (there is no test-only override for that path) — it is a
+//! disposable "most recent error" scratch file the running service already
+//! overwrites on every real failure, so a test run leaving synthetic data
+//! there is a deliberately accepted, low-impact trade-off in exchange for
+//! actually covering that write path.
 
 use actix_web::body::to_bytes;
 use actix_web::http::StatusCode;
@@ -17,6 +20,12 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// Both upstream-error tests below write the same real
+/// `last_error_file()` path — nothing test-local overrides it — so they'd
+/// race under Rust's default parallel test execution without this. Async
+/// (not `std::sync::Mutex`) because the guard is held across `.await`.
+static LAST_ERROR_FILE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn write_temp_key(contents: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -211,4 +220,172 @@ async fn passthrough_route_replaces_client_auth_with_route_key() {
     let body = to_bytes(response.into_body()).await.expect("body");
     let value: serde_json::Value = serde_json::from_slice(&body).expect("json");
     assert_eq!(value["id"], "resp_1");
+}
+
+#[actix_web::test]
+async fn passthrough_route_missing_key_file_returns_500() {
+    let route = Route {
+        name: "deepseek",
+        prefix: "deepseek-",
+        base_url: "https://example.invalid".to_string(),
+        path: "/responses",
+        key_file: std::env::temp_dir().join("codex-router-test-key-does-not-exist"),
+        translate: Translate::None,
+    };
+    let req = TestRequest::post().uri("/x").to_http_request();
+    let client = reqwest::Client::new();
+    let response =
+        codex_router::proxy::handle_passthrough(&client, &req, Some(&route), None, Vec::new())
+            .await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[actix_web::test]
+async fn passthrough_route_connect_failure_returns_502() {
+    // Port 1 is a privileged port nothing binds to in this environment —
+    // connection is refused immediately, no real network round trip.
+    let route = Route {
+        name: "deepseek",
+        prefix: "deepseek-",
+        base_url: "http://127.0.0.1:1".to_string(),
+        path: "/responses",
+        key_file: write_temp_key("k"),
+        translate: Translate::None,
+    };
+    let req = TestRequest::post().uri("/x").to_http_request();
+    let client = reqwest::Client::new();
+    let response =
+        codex_router::proxy::handle_passthrough(&client, &req, Some(&route), None, Vec::new())
+            .await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+}
+
+#[actix_web::test]
+async fn passthrough_route_upstream_error_is_forwarded_and_recorded() {
+    let _guard = LAST_ERROR_FILE_LOCK.lock().await;
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(402).set_body_json(json!({ "error": "insufficient balance" })),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let route = Route {
+        name: "deepseek",
+        prefix: "deepseek-",
+        base_url: mock_server.uri(),
+        path: "/responses",
+        key_file: write_temp_key("k"),
+        translate: Translate::None,
+    };
+    let raw_body = json!({ "model": "deepseek-flash" })
+        .to_string()
+        .into_bytes();
+    let req = TestRequest::post().uri("/x").to_http_request();
+    let client = reqwest::Client::new();
+    let parsed: serde_json::Value = serde_json::from_slice(&raw_body).unwrap();
+    let response = codex_router::proxy::handle_passthrough(
+        &client,
+        &req,
+        Some(&route),
+        Some(parsed),
+        raw_body,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+
+    // The >=400 branch overwrites the real last-error file — read it back
+    // to confirm this specific run's error was recorded, rather than
+    // asserting nothing about the known side effect.
+    let recorded: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(codex_router::config::last_error_file()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(recorded["route"], "deepseek");
+    assert_eq!(recorded["status"], 402);
+}
+
+#[actix_web::test]
+async fn translated_route_missing_key_file_returns_500() {
+    let route = Route {
+        name: "glm",
+        prefix: "glm-",
+        base_url: "https://example.invalid".to_string(),
+        path: "/api/paas/v4/chat/completions",
+        key_file: std::env::temp_dir().join("codex-router-test-key-does-not-exist"),
+        translate: Translate::Chat,
+    };
+    let parsed = json!({ "model": "glm-5.3-flash", "input": [] });
+    let client = reqwest::Client::new();
+    let response = codex_router::translate::handle_translated(&client, &route, parsed).await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[actix_web::test]
+async fn translated_route_connect_failure_returns_502() {
+    let route = Route {
+        name: "glm",
+        prefix: "glm-",
+        base_url: "http://127.0.0.1:1".to_string(),
+        path: "/api/paas/v4/chat/completions",
+        key_file: write_temp_key("k"),
+        translate: Translate::Chat,
+    };
+    let parsed = json!({ "model": "glm-5.3-flash", "input": [] });
+    let client = reqwest::Client::new();
+    let response = codex_router::translate::handle_translated(&client, &route, parsed).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+}
+
+#[actix_web::test]
+async fn translated_route_upstream_error_is_forwarded_and_recorded() {
+    let _guard = LAST_ERROR_FILE_LOCK.lock().await;
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(json!({ "error": "overloaded" })))
+        .mount(&mock_server)
+        .await;
+
+    let route = Route {
+        name: "glm",
+        prefix: "glm-",
+        base_url: mock_server.uri(),
+        path: "/api/paas/v4/chat/completions",
+        key_file: write_temp_key("k"),
+        translate: Translate::Chat,
+    };
+    let parsed = json!({ "model": "glm-4.7-flash", "input": [] });
+    let client = reqwest::Client::new();
+    let response = codex_router::translate::handle_translated(&client, &route, parsed).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    let recorded: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(codex_router::config::last_error_file()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(recorded["route"], "glm");
+    assert_eq!(recorded["status"], 429);
+}
+
+#[actix_web::test]
+async fn translated_route_malformed_upstream_json_returns_502() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+        .mount(&mock_server)
+        .await;
+
+    let route = Route {
+        name: "glm",
+        prefix: "glm-",
+        base_url: mock_server.uri(),
+        path: "/api/paas/v4/chat/completions",
+        key_file: write_temp_key("k"),
+        translate: Translate::Chat,
+    };
+    let parsed = json!({ "model": "glm-5.3-flash", "input": [] });
+    let client = reqwest::Client::new();
+    let response = codex_router::translate::handle_translated(&client, &route, parsed).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 }
