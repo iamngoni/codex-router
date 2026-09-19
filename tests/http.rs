@@ -104,6 +104,9 @@ async fn translated_route_returns_plain_text_reply() {
         path: "/api/paas/v4/chat/completions",
         key_file: write_temp_key("test-key"),
         translate: Translate::Chat,
+        max_body_bytes: None,
+        strip_prefix: false,
+        label_sse_events: false,
     };
 
     let parsed = json!({
@@ -143,6 +146,9 @@ async fn translated_route_returns_streaming_reply() {
         path: "/api/paas/v4/chat/completions",
         key_file: write_temp_key("test-key"),
         translate: Translate::Chat,
+        max_body_bytes: None,
+        strip_prefix: false,
+        label_sse_events: false,
     };
 
     let parsed = json!({
@@ -183,6 +189,9 @@ async fn translated_route_returns_tool_call() {
         path: "/api/paas/v4/chat/completions",
         key_file: write_temp_key("test-key"),
         translate: Translate::Chat,
+        max_body_bytes: None,
+        strip_prefix: false,
+        label_sse_events: false,
     };
 
     let parsed = json!({
@@ -209,6 +218,7 @@ async fn passthrough_route_replaces_client_auth_with_route_key() {
         .and(header("authorization", "Bearer upstream-key"))
         .respond_with(
             ResponseTemplate::new(200)
+                .insert_header("content-encoding", "gzip")
                 .set_body_json(json!({ "id": "resp_1", "object": "response" })),
         )
         .mount(&mock_server)
@@ -221,6 +231,9 @@ async fn passthrough_route_replaces_client_auth_with_route_key() {
         path: "/responses",
         key_file: write_temp_key("upstream-key"),
         translate: Translate::None,
+        max_body_bytes: None,
+        strip_prefix: false,
+        label_sse_events: false,
     };
 
     let raw_body = json!({ "model": "deepseek-flash", "input": [] })
@@ -232,6 +245,8 @@ async fn passthrough_route_replaces_client_auth_with_route_key() {
             "authorization",
             "Bearer client-side-token-should-not-reach-upstream",
         ))
+        .insert_header(("content-encoding", "gzip"))
+        .insert_header(("cookie", "session=should-not-reach-upstream"))
         .to_http_request();
 
     let client = reqwest::Client::new();
@@ -249,9 +264,29 @@ async fn passthrough_route_replaces_client_auth_with_route_key() {
     // outgoing request carried the route's key, not the client's; a 200
     // here proves that matched (a mismatch would 404 on the unmounted path).
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-encoding")
+            .and_then(|value| value.to_str().ok()),
+        Some("gzip")
+    );
     let body = to_bytes(response.into_body()).await.expect("body");
     let value: serde_json::Value = serde_json::from_slice(&body).expect("json");
     assert_eq!(value["id"], "resp_1");
+    let received = mock_server
+        .received_requests()
+        .await
+        .expect("recorded request");
+    let headers = &received[0].headers;
+    assert_eq!(
+        headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer upstream-key")
+    );
+    assert!(!headers.contains_key("content-encoding"));
+    assert!(!headers.contains_key("cookie"));
 }
 
 #[actix_web::test]
@@ -263,6 +298,9 @@ async fn passthrough_route_missing_key_file_returns_500() {
         path: "/responses",
         key_file: std::env::temp_dir().join("codex-router-test-key-does-not-exist"),
         translate: Translate::None,
+        max_body_bytes: None,
+        strip_prefix: false,
+        label_sse_events: false,
     };
     let req = TestRequest::post().uri("/x").to_http_request();
     let client = reqwest::Client::new();
@@ -283,6 +321,9 @@ async fn passthrough_route_connect_failure_returns_502() {
         path: "/responses",
         key_file: write_temp_key("k"),
         translate: Translate::None,
+        max_body_bytes: None,
+        strip_prefix: false,
+        label_sse_events: false,
     };
     let req = TestRequest::post().uri("/x").to_http_request();
     let client = reqwest::Client::new();
@@ -310,6 +351,9 @@ async fn passthrough_route_upstream_error_is_forwarded_and_recorded() {
         path: "/responses",
         key_file: write_temp_key("k"),
         translate: Translate::None,
+        max_body_bytes: None,
+        strip_prefix: false,
+        label_sse_events: false,
     };
     let raw_body = json!({ "model": "deepseek-flash" })
         .to_string()
@@ -347,6 +391,9 @@ async fn translated_route_missing_key_file_returns_500() {
         path: "/api/paas/v4/chat/completions",
         key_file: std::env::temp_dir().join("codex-router-test-key-does-not-exist"),
         translate: Translate::Chat,
+        max_body_bytes: None,
+        strip_prefix: false,
+        label_sse_events: false,
     };
     let parsed = json!({ "model": "glm-5.3-flash", "input": [] });
     let client = reqwest::Client::new();
@@ -363,6 +410,9 @@ async fn translated_route_connect_failure_returns_502() {
         path: "/api/paas/v4/chat/completions",
         key_file: write_temp_key("k"),
         translate: Translate::Chat,
+        max_body_bytes: None,
+        strip_prefix: false,
+        label_sse_events: false,
     };
     let parsed = json!({ "model": "glm-5.3-flash", "input": [] });
     let client = reqwest::Client::new();
@@ -386,6 +436,9 @@ async fn translated_route_upstream_error_is_forwarded_and_recorded() {
         path: "/api/paas/v4/chat/completions",
         key_file: write_temp_key("k"),
         translate: Translate::Chat,
+        max_body_bytes: None,
+        strip_prefix: false,
+        label_sse_events: false,
     };
     let parsed = json!({ "model": "glm-4.7-flash", "input": [] });
     let client = reqwest::Client::new();
@@ -415,9 +468,108 @@ async fn translated_route_malformed_upstream_json_returns_502() {
         path: "/api/paas/v4/chat/completions",
         key_file: write_temp_key("k"),
         translate: Translate::Chat,
+        max_body_bytes: None,
+        strip_prefix: false,
+        label_sse_events: false,
     };
     let parsed = json!({ "model": "glm-5.3-flash", "input": [] });
     let client = reqwest::Client::new();
     let response = codex_router::translate::handle_translated(&client, &route, parsed).await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+}
+
+/// OpenRouter streams Responses events as bare `data:` frames; Codex expects the
+/// `event: <type>` label every other provider it talks to sends, so a route that
+/// declares the difference gets it added on the way back — and one that does not
+/// declare it is passed through byte for byte.
+#[actix_web::test]
+async fn sse_frames_are_labelled_only_for_routes_that_ask() {
+    let mock_server = MockServer::start().await;
+    let stream =
+        "data: {\"type\":\"response.created\"}\n\ndata: {\"type\":\"response.completed\"}\n\n";
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(stream),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let route = |label: bool| Route {
+        name: "openrouter",
+        prefix: "openrouter/",
+        base_url: mock_server.uri(),
+        path: "/api/v1/responses",
+        key_file: write_temp_key("k"),
+        translate: Translate::None,
+        max_body_bytes: None,
+        strip_prefix: true,
+        label_sse_events: label,
+    };
+    let raw = json!({ "model": "anthropic/claude-x", "input": [] })
+        .to_string()
+        .into_bytes();
+    let client = reqwest::Client::new();
+
+    for (label, expected) in [(true, true), (false, false)] {
+        let route = route(label);
+        let req = TestRequest::post().uri("/x").to_http_request();
+        let response =
+            codex_router::proxy::handle_passthrough(&client, &req, Some(&route), None, raw.clone())
+                .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body()).await.expect("body");
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(
+            text.contains("event: response.created\n"),
+            expected,
+            "label_sse_events={label}: {text}"
+        );
+        assert_eq!(
+            text.contains("event: response.completed\n"),
+            expected,
+            "{text}"
+        );
+    }
+}
+
+/// A body past the route's measured upstream limit is refused here, not
+/// uploaded: the upstream answers those with a bare HTML 413 anyway, and Codex
+/// retries a few times per turn. Posts through the real app wiring (`main.rs`'s
+/// `PayloadConfig` + `default_service`), so it also proves a 48 MiB body clears
+/// the extractor, and pins the limit `dispatch` enforces to the route's own.
+#[actix_web::test]
+async fn deepseek_body_over_the_edge_limit_is_refused_locally() {
+    let cap = codex_router::routes::DEEPSEEK_MAX_BODY_BYTES;
+    let prefix = br#"{"model":"deepseek-flash","input":""#;
+    let suffix = br#""}"#;
+    let mut payload = Vec::with_capacity(cap + 1);
+    payload.extend_from_slice(prefix);
+    payload.resize(cap + 1 - suffix.len(), b'x');
+    payload.extend_from_slice(suffix);
+    assert_eq!(payload.len(), cap + 1);
+
+    let app = actix_web::test::init_service(
+        App::new()
+            .app_data(web::Data::new(reqwest::Client::new()))
+            .app_data(web::PayloadConfig::new(
+                codex_router::config::MAX_PAYLOAD_BYTES,
+            ))
+            .default_service(web::route().to(codex_router::dispatch)),
+    )
+    .await;
+    let req = TestRequest::post()
+        .uri("/backend-api/codex/responses")
+        .set_payload(payload)
+        .to_request();
+    let response = actix_web::test::call_service(&app, req).await;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body = to_bytes(response.into_body()).await.expect("body");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("json error object");
+    assert_eq!(value["error"]["code"], "payload_too_large");
+    let message = value["error"]["message"].as_str().expect("message");
+    assert!(message.contains("deepseek"), "{message}");
+    assert!(message.contains("48.0 MiB"), "{message}");
 }

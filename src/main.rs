@@ -3,7 +3,7 @@
 //! the library crate so integration tests exercise the identical wiring.
 
 use actix_web::{App, HttpServer, web};
-use codex_router::{config, dispatch, healthz, logging::log};
+use codex_router::{config, dispatch, healthz, logging::log, messages};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -15,6 +15,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(client.clone()))
             .app_data(web::PayloadConfig::new(config::MAX_PAYLOAD_BYTES))
             .route("/healthz", web::get().to(healthz))
+            .configure(messages::configure)
             .default_service(web::route().to(dispatch))
     })
     .bind((config::HOST, config::PORT))?
