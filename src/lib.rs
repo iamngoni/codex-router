@@ -6,6 +6,7 @@ pub mod config;
 pub mod keyfile;
 pub mod logging;
 pub mod messages;
+pub mod models;
 pub mod proxy;
 pub mod routes;
 pub mod schema;
@@ -37,6 +38,14 @@ pub async fn dispatch(
     body: web::Bytes,
     client: web::Data<reqwest::Client>,
 ) -> HttpResponse {
+    if req.method() == actix_web::http::Method::GET && req.path() == "/backend-api/codex/models" {
+        let state = req
+            .app_data::<web::Data<models::ModelsState>>()
+            .cloned()
+            .unwrap_or_else(|| web::Data::new(models::ModelsState::new()));
+        return models::handle(req, client, state).await;
+    }
+
     // Explicit Messages routes are configured in `main`, but this guard also
     // protects suffixes/methods that Actix cannot match to those resources.
     // They must never fall through to the OpenAI/Codex dispatcher with a

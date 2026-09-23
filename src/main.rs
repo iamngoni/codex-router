@@ -3,16 +3,18 @@
 //! the library crate so integration tests exercise the identical wiring.
 
 use actix_web::{App, HttpServer, web};
-use codex_router::{config, dispatch, healthz, logging::log, messages};
+use codex_router::{config, dispatch, healthz, logging::log, messages, models};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let client = reqwest::Client::new();
+    let models_state = web::Data::new(models::ModelsState::new());
     log(&format!("listening on {}:{}", config::HOST, config::PORT));
 
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(client.clone()))
+            .app_data(models_state.clone())
             .app_data(web::PayloadConfig::new(config::MAX_PAYLOAD_BYTES))
             .route("/healthz", web::get().to(healthz))
             .configure(messages::configure)

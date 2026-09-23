@@ -44,6 +44,14 @@ pub fn last_error_file() -> PathBuf {
         .join("codex-router-last-error.json")
 }
 
+/// Optional locally generated model entries merged into the native catalogue.
+pub fn external_catalog_file() -> PathBuf {
+    home_dir()
+        .join(".codex")
+        .join("model-catalogs")
+        .join("external.json")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

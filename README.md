@@ -71,10 +71,17 @@ does a stream that arrives already labelled.
 
 Codex only offers models it has catalog entries for, and the slug is the string
 it sends as `model`, so OpenRouter entries have to be named
-`openrouter/<vendor>/<model>`. `tools/openrouter-catalog.py` generates them from
-OpenRouter's public model list (context window, modalities, whether the model
-takes reasoning) and merges them into `~/.codex/model-catalogs/all.json`,
-leaving every other entry alone:
+`openrouter/<vendor>/<model>`. `GET /backend-api/codex/models` fetches the native
+OpenAI catalogue on every request, then merges entries from
+`~/.codex/model-catalogs/external.json`. Native records win slug collisions;
+external records keep their file order and receive priorities after the native
+catalogue. A malformed or unavailable external file leaves the last valid file
+in place, while a valid empty `models` list clears the external entries.
+
+`tools/openrouter-catalog.py` generates external entries from OpenRouter's public
+model list (context window, modalities, whether the model takes reasoning) and
+atomically replaces only existing `openrouter/` entries, preserving manual
+DeepSeek/GLM entries:
 
 ```sh
 python3 tools/openrouter-catalog.py                        # preview
